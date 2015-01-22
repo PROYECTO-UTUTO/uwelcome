@@ -1,0 +1,187 @@
+#!/bin/bash
+# check-ldd - shell script
+# Command to fix not present libraries
+#
+# usage:  check-ldd
+#
+# Autor: Daniel Olivera <daniel@ututo.org>
+#
+# Copyright (C) 2006 The UTUTO Project
+# Distributed under the terms of the GNU General Public License v2 or new
+#
+# $Header: $
+
+CONF="/etc/uget/ututo-get.conf"
+if [ -e "$CONF" ];then
+    . $CONF
+else
+    echo " "
+    echo -e "\aError $CONF not found."
+    echo " "
+    exit
+fi 
+
+WGETVERSION=`wget --version | head -n 1 | grep "1.9"`
+CONF="/etc/uget/ututo-get.conf"
+PROCESSOR=`awk -F \" /^PROCESSOR/'{print $2}' $CONF 2>/dev/tty12`
+GET_PROGRAM=`awk -F \" /^GET_PROGRAM/'{print $2}' $CONF | head -n1 2>/dev/tty12`
+GET_OPTIONS=`awk -F \" /^GET_OPTIONS/'{print $2}' $CONF | head -n1 2>/dev/tty12`
+PROTOCOL=`awk -F \" /^PROTOCOL/'{print $2}' $CONF 2>/dev/tty12`
+
+. $CONF
+[ -f $CONF ] && . $CONF
+
+SERVER="$1"
+if [ "$SERVER" = "" ];then
+    SERVER=`awk -F \" /^SERVER/'{print $2}' $CONF 2>/dev/tty12`
+fi
+
+if [ "$GET_PROGRAM" != "" ] && [ "$GET_OPTIONS" != "" ]; then
+    GET="$GET_PROGRAM $GET_OPTIONS -t 3"
+else
+    GET="wget --passive-ftp --continue"
+fi
+
+if [ "$PROTOCOL" = "" ]; then
+    PROTOCOL="http"
+fi
+
+if [ "$WGETVERSION" != "" ];then 
+    GET=`echo $GET | sed "s/--no-check-certificate//" | sed "s/--no-check-certificate//"`
+else
+    if [ "$PROTOCOL" = "https" ];then
+	GET="$GET"
+    fi
+fi
+
+if [ "$SERVER" = "" ]; then
+    SERVER="packages.ututo.org"
+fi
+IPS=`ping -c 1 $SERVER | grep "PING" | cut -d "(" -f 2 | cut -d ")" -f 1`
+
+PROCS="$PROCESSOR"
+
+DIRS="/usr/sbin /usr/lib /bin /sbin /usr/bin /lib /usr/local/lib /usr/local/bin /usr/local/sbin /usr/kde/3.5/bin /usr/kde/3.4/bin /usr/kde/3.3/bin /usr/kde/3.2/bin /opt /usr/lib/mozilla-firefox /usr/lib/openoffice/program /usr/lib/seamonkey /usr/lib/apache2 /usr/lib/gcc  /usr/kde/3.5/lib /usr/lib/NX/bin /usr/lib/NX/lib /usr/kde/4.0/bin /usr/kde/4.1/bin /usr/kde/4.2/bin /usr/kde /usr/games/bin /usr/lib/kde4 /usr/lib/evince/3/backends"
+
+## first fix xdg error environment
+if [ ! -f /etc/profile.d/99xdg.sh ]; then
+    mv /etc/env.d/99xdg /etc/profile.d/99xdg.sh
+    sed -i "s/^XDG_/export XDG_/g" /etc/profile.d/99xdg.sh
+    chmod +x /etc/profile.d/99xdg.sh
+fi
+## end fix xdg environment
+
+## FIX libstdc++.so
+if [ -f $(ls -1v /usr/lib/gcc/*/*/libstdc++.so | tail -n 1) ]; then
+	rm /usr/lib/libstdc++.so.6
+	ln -s $(ls -1v /usr/lib/gcc/*/*/libstdc++.so | tail -n 1) /usr/lib/libstdc++.so.6
+fi
+## end fix libstdc++.so
+
+clear
+echo "_____________________________________________________"
+echo "Configured options for Check-ldd:"
+echo " "
+if [ -e $CONF ];then
+    echo "UTUTO-Get detected. Configuring options from it."
+else
+    echo "Default option will be used. (UTUTO-Get NOT PRESENT in this system)"
+fi
+echo "Processor selected: $PROCS"
+echo "Server selected: $SERVER ($IPS)"
+echo "Protocol selected: $PROTOCOL"
+echo "Download procedure: $GET"
+echo -n "GNU Wget Version: "
+if [ "$WGETVERSION" != "" ];then 
+    echo "1.9"
+else
+    echo "1.10 or more new"
+fi
+
+rm -rf /tmp/libraries
+rm -rf /libraries-nf.txt
+rm -rf /libraries-d.txt
+if [ "$1" = "clean" ]; then
+    echo "Clean old libraries installed by Check-ldd: YES/Si"
+    echo "      (This process may be break your system!!)"
+    echo " "
+    echo "Waiting 20 seconds to start."
+    echo "Press CTRL+C to stop now this process!!"
+    echo " "
+    sleep 20
+    echo "Continuing..."
+    echo "Detecting libraries installed with Check-ldd"
+    ldconfig &> /libraries-d.txt
+    cat /libraries-d.txt | grep "ldconfig:" | grep -v "libxcb" > /libraries-d.txt2
+    mv /libraries-d.txt2 /libraries-d.txt
+    echo "Removing libraries installed with Check-ldd"
+    while read X2
+    do
+        REMOVE=`echo $X2 | cut -d " " -f 2`
+        rm -f $REMOVE
+    done < /libraries-d.txt
+    echo "Removed all libraries installed with Check-ldd"
+    ldconfig
+else
+    echo "Clean old libraries installed by Check-ldd: NO"
+fi
+rm -rf /libraries-d.txt
+
+echo "_____________________________________________________"
+
+for X in $DIRS
+do
+    echo "Analizing binaries in $X (nice -15)..."
+    ldd -v $X/* 2>/dev/null | grep "not found" | cut -d " " -f 1 | sed "s/\t//" | sed "s/\t//" | sed "s/libcrack.so//" >> /libraries-nf.txt &
+    while [ $(jobs -p | wc -l) -gt 3 ]; do
+    	sleep 1
+    done
+done
+wait
+
+while read X2
+do
+    LIBE=`cat /libraries-nf2.txt 2>/dev/null | grep "$X2"`
+    if [ "$LIBE" = "" ];then
+	echo "$X2" >> /libraries-nf2.txt
+    fi    
+done < /libraries-nf.txt
+
+mv /libraries-nf2.txt /libraries-nf.txt
+
+cd /tmp
+echo "----------------------------------------------------------------------"
+echo "Downloading libraries information database"
+wget $GET_OPTIONS packages.ututo.org/utiles/skels/libpro.txt.new
+while read X2
+do
+    FOUNDPKG=`cat /tmp/libpro.txt.new | grep "$X2:" | tail -n 1`
+    if [ "$FOUNDPKG" != "" ];then
+	PARAM1=`echo $FOUNDPKG | cut -d ":" -f 1`
+	PARAM2=`echo $FOUNDPKG | cut -d ":" -f 2`
+	PARAM3=`echo $FOUNDPKG | cut -d ":" -f 3`
+	echo "----------------------------------------------------------------------"
+	echo "Lib: $X2 ($PARAM1) found in package $PARAM2"
+	wget $GET_OPTIONS packages.ututo.org/$PROCESSOR/$PARAM2.tbz2
+	mkdir $PARAM2
+	tar -xvjpf $PARAM2.tbz2 -C $PARAM2 1>/dev/null
+	DEST=`echo $PARAM3 | sed "s/$X2//"`
+	echo "Copying /tmp/$PARAM2$PARAM3 in $DEST"
+	cp -a /tmp/$PARAM2$PARAM3* $DEST
+	rm -rf /tmp/$PARAM2
+	echo "----------------------------------------------------------------------"
+    fi
+
+done < /libraries-nf.txt
+
+echo -n "Processing libraries (ldconfig)..."
+ldconfig 2>/dev/null
+echo -n "Reprocessing Pango modules (pango-querymodules)..."
+pango-querymodules > /etc/pango/pango.modules
+echo "Done."
+echo -n "Removing temp files..."
+rm -rf /tmp/libraries
+rm -rf /tmp/*.tbz2
+rm -rf /libraries-nf.txt
+rm -rf /tmp/libpro.txt*
+echo "Done."
